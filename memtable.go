@@ -41,6 +41,14 @@ import (
 	"github.com/pkg/errors"
 )
 
+type memTables []*memTable
+
+func (mt memTables) DecrRef() {
+	for _, tbl := range mt {
+		tbl.DecrRef()
+	}
+}
+
 // memTable structure stores a skiplist and a corresponding WAL. Writes to memTable are written
 // both to the WAL and the skiplist. On a crash, the WAL is replayed to bring the skiplist back to
 // its pre-crash form.
