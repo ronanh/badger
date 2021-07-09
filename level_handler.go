@@ -238,7 +238,8 @@ func (s *levelHandler) close() error {
 }
 
 // getTableForKey acquires a read-lock to access s.tables. It returns a list of tableHandlers.
-func (s *levelHandler) getTableForKey(key []byte) ([]*table.Table, func() error) {
+// DecRef() should be called on the tableHandlers after use.
+func (s *levelHandler) getTableForKey(key []byte) table.Tables {
 	s.RLock()
 	defer s.RUnlock()
 
@@ -251,14 +252,7 @@ func (s *levelHandler) getTableForKey(key []byte) ([]*table.Table, func() error)
 			out = append(out, s.tables[i])
 			s.tables[i].IncrRef()
 		}
-		return out, func() error {
-			for _, t := range out {
-				if err := t.DecrRef(); err != nil {
-					return err
-				}
-			}
-			return nil
-		}
+		return out
 	}
 	// For level >= 1, we can do a binary search as key range does not overlap.
 	idx := sort.Search(len(s.tables), func(i int) bool {
@@ -266,16 +260,16 @@ func (s *levelHandler) getTableForKey(key []byte) ([]*table.Table, func() error)
 	})
 	if idx >= len(s.tables) {
 		// Given key is strictly > than every element we have.
-		return nil, func() error { return nil }
+		return nil
 	}
 	tbl := s.tables[idx]
 	tbl.IncrRef()
-	return []*table.Table{tbl}, tbl.DecrRef
+	return []*table.Table{tbl}
 }
 
 // get returns value for a given key or the key after that. If not found, return nil.
 func (s *levelHandler) get(key []byte) (y.ValueStruct, error) {
-	tables, decr := s.getTableForKey(key)
+	tables := s.getTableForKey(key)
 	keyNoTs := y.ParseKey(key)
 
 	hash := y.Hash(keyNoTs)
@@ -287,11 +281,11 @@ func (s *levelHandler) get(key []byte) (y.ValueStruct, error) {
 		}
 
 		it := th.NewIterator(0)
-		defer it.Close()
 
 		y.NumLSMGetsAdd(s.db.opt.MetricsEnabled, s.strLevel, 1)
 		it.Seek(key)
 		if !it.Valid() {
+			it.Close()
 			continue
 		}
 		if y.SameKey(key, it.Key()) {
@@ -300,8 +294,9 @@ func (s *levelHandler) get(key []byte) (y.ValueStruct, error) {
 				maxVs.Version = version
 			}
 		}
+		it.Close()
 	}
-	return maxVs, decr()
+	return maxVs, tables.DecRef()
 }
 
 // iterators returns an array of iterators, for merging.
@@ -318,13 +313,22 @@ func (s *levelHandler) iterators(opt *IteratorOptions) []y.Iterator {
 		// Remember to add in reverse order!
 		// The newer table at the end of s.tables should be added first as it takes precedence.
 		// Level 0 tables are not in key sorted order, so we need to consider them one by one.
-		var out []*table.Table
+		var tablesLen int
 		for _, t := range s.tables {
 			if opt.pickTable(t) {
-				out = append(out, t)
+				tablesLen++
 			}
 		}
-		return iteratorsReversed(out, topt)
+		if tablesLen == 0 {
+			return nil
+		}
+		out := make([]y.Iterator, 0, tablesLen)
+		for _, t := range s.tables {
+			if opt.pickTable(t) {
+				out = append(out, t.NewIterator(topt))
+			}
+		}
+		return out
 	}
 
 	tables := opt.pickTables(s.tables)

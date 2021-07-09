@@ -47,7 +47,7 @@ type Item struct {
 	version   uint64
 	expiresAt uint64
 
-	slice *y.Slice // Used only during prefetching.
+	slice y.Slice // Used only during prefetching.
 	next  *Item
 	txn   *Txn
 
@@ -155,10 +155,6 @@ func (item *Item) yieldItemValue() ([]byte, func(), error) {
 		return nil, nil, nil
 	}
 
-	if item.slice == nil {
-		item.slice = new(y.Slice)
-	}
-
 	if (item.meta & bitValuePointer) == 0 {
 		val := item.slice.Resize(len(item.vptr))
 		copy(val, item.vptr)
@@ -168,7 +164,7 @@ func (item *Item) yieldItemValue() ([]byte, func(), error) {
 	var vp valuePointer
 	vp.Decode(item.vptr)
 	db := item.txn.db
-	result, cb, err := db.vlog.Read(vp, item.slice)
+	result, cb, err := db.vlog.Read(vp, &item.slice)
 	if err != nil {
 		db.opt.Logger.Errorf("Unable to read: Key: %v, Version : %v, meta: %v, userMeta: %v"+
 			" Error: %v", key, item.version, item.meta, item.userMeta, err)
@@ -483,17 +479,18 @@ func (txn *Txn) NewIterator(opt IteratorOptions) *Iterator {
 
 	// TODO: If Prefix is set, only pick those memtables which have keys with
 	// the prefix.
-	tables, decr := txn.db.getMemTables()
-	defer decr()
+	tables := txn.db.getMemTables()
+	defer tables.DecrRef()
 	txn.db.vlog.incrIteratorCount()
-	var iters []y.Iterator
+	lcIters := txn.db.lc.iterators(&opt) // This will increment references.
+	iters := make([]y.Iterator, 0, len(tables)+1+len(lcIters))
 	if itr := txn.newPendingWritesIterator(opt.Reverse); itr != nil {
 		iters = append(iters, itr)
 	}
 	for i := 0; i < len(tables); i++ {
 		iters = append(iters, tables[i].sl.NewUniIterator(opt.Reverse))
 	}
-	iters = append(iters, txn.db.lc.iterators(&opt)...) // This will increment references.
+	iters = append(iters, lcIters...)
 	res := &Iterator{
 		txn:    txn,
 		iitr:   table.NewMergeIterator(iters, opt.Reverse),
@@ -519,7 +516,7 @@ func (txn *Txn) NewKeyIterator(key []byte, opt IteratorOptions) *Iterator {
 func (it *Iterator) newItem() *Item {
 	item := it.waste.pop()
 	if item == nil {
-		item = &Item{slice: new(y.Slice), txn: it.txn}
+		item = &Item{txn: it.txn}
 	}
 	return item
 }

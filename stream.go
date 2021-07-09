@@ -477,8 +477,8 @@ func (st *Stream) Orchestrate(ctx context.Context) error {
 
 	// Pick all relevant tables from levels. We'd use this to copy them over,
 	// or generate iterators from them.
-	memTables, decr := st.db.getMemTables()
-	defer decr()
+	memTables := st.db.getMemTables()
+	defer memTables.DecrRef()
 
 	opts := DefaultIteratorOptions
 	opts.Prefix = st.Prefix

@@ -687,11 +687,12 @@ func (db *DB) Sync() error {
 }
 
 // getMemtables returns the current memtables and get references.
-func (db *DB) getMemTables() ([]*memTable, func()) {
+// DecRef() should be called on memtables after use
+func (db *DB) getMemTables() memTables {
 	db.lock.RLock()
 	defer db.lock.RUnlock()
 
-	var tables []*memTable
+	tables := make([]*memTable, 0, len(db.imm)+1)
 
 	// Mutable memtable does not exist in read-only mode.
 	if !db.opt.ReadOnly {
@@ -706,11 +707,7 @@ func (db *DB) getMemTables() ([]*memTable, func()) {
 		tables = append(tables, db.imm[last-i])
 		db.imm[last-i].IncrRef()
 	}
-	return tables, func() {
-		for _, tbl := range tables {
-			tbl.DecrRef()
-		}
-	}
+	return tables
 }
 
 // get returns the value in memtable or disk for given key.
@@ -731,8 +728,8 @@ func (db *DB) get(key []byte) (y.ValueStruct, error) {
 	if db.IsClosed() {
 		return y.ValueStruct{}, ErrDBClosed
 	}
-	tables, decr := db.getMemTables() // Lock should be released.
-	defer decr()
+	tables := db.getMemTables() // Lock should be released.
+	defer tables.DecrRef()
 
 	var maxVs y.ValueStruct
 	version := y.ParseTs(key)

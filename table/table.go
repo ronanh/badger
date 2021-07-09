@@ -93,6 +93,18 @@ type TableInterface interface {
 	MaxVersion() uint64
 }
 
+// Tables represents a list of tables
+type Tables []*Table
+
+func (t Tables) DecRef() error {
+	for _, t := range t {
+		if err := t.DecrRef(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // Table represents a loaded table file with the info we have about it.
 type Table struct {
 	sync.Mutex
@@ -559,7 +571,7 @@ func (t *Table) offsets(ko *fb.BlockOffset, i int) bool {
 // slice stored in the block will be reused when the ref becomes zero. The
 // caller should release the block by calling block.decrRef() on it.
 func (t *Table) block(idx int, useCache bool) (*block, error) {
-	y.AssertTruef(idx >= 0, "idx=%d", idx)
+	y.AssertTruef(idx >= 0, "idx<0")
 	if idx >= t.offsetsLength() {
 		return nil, errors.New("block out of index")
 	}
@@ -582,6 +594,7 @@ func (t *Table) block(idx int, useCache bool) (*block, error) {
 		offset: int(ko.Offset()),
 		ref:    1,
 	}
+
 	defer blk.decrRef() // Deal with any errors, where blk would not be returned.
 	atomic.AddInt32(&NumBlocks, 1)
 
